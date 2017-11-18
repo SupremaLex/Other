@@ -4,14 +4,13 @@ import math
 from matplotlib import pyplot as plt
 
 
-feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=30)
-lk_params = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-
 vert_border = 5
 horizontal_border = 5
 
 
 def compareplots(oldtrajectory, newtrajectory, name):
+    """Draw plots of old image trajectory and image trajectory
+    name in [A,X,Y]"""
     f = plt.figure(name)
     number = len(oldtrajectory)
     name = name.upper()
@@ -40,85 +39,90 @@ def compareplots(oldtrajectory, newtrajectory, name):
     plt.ylabel(name, figure=f)
 
 
-def videostab(filename):
+def videostab(filename, pstd=4e-3, cstd=0.1, newsize=(640, 320)):
+    """Simple video live stabilization via recursive Kalman Filter"""
     print('Video ' + filename + ' processed')
-    X = np.array([0, 0, 0], dtype=np.float32)  # posteriori state estimate
-    P = np.array([1, 1, 1], dtype=np.float32)  # posteriori estimate error covariance
-    z = np.array([0, 0, 0], dtype=np.float32)  # actual measurement
-    d = np.array([0, 0, 0], dtype=np.float32)  # change
-    P_ = np.array([0, 0, 0], dtype=np.float32)
-    X_ = np.array([0, 0, 0], dtype=np.float32)
-    pstd = 5e-3  # can be changed
-    cstd = 0.1  # can be changed
-    Q = np.array([pstd, pstd, pstd])  # process noise covariance
-    R = np.array([cstd, cstd, cstd])**2  # measurement noise covariance
+    # posteriori state estimate
+    X = np.array([0, 0, 0], dtype=np.float32)
+    # posteriori estimate error covariance
+    P = np.array([1, 1, 1], dtype=np.float32)
+    # actual measurement
+    z = np.array([0, 0, 0], dtype=np.float32)
+    # change
+    d = np.array([0, 0, 0], dtype=np.float32)
+    # process noise covariance
+    Q = np.array([pstd, pstd, pstd])
+    # measurement noise covariance
+    R = np.array([cstd, cstd, cstd])**2
 
     file = filename
     cap = cv2.VideoCapture(file)
     ret1, prev = cap.read()
-    newsize = (1920//4, 1080//4)
     prev = cv2.resize(prev, newsize, cv2.INTER_CUBIC)
-    prevgrey = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
-    prevpts = cv2.goodFeaturesToTrack(prevgrey, **feature_params)
 
     old, new = [], []
-
+    # videowriter args
     fourcc = cv2.VideoWriter_fourcc(*'H264')
     fps = cap.get(5)
-    size1 = np.int(cap.get(3))
-    size2 = np.int(cap.get(4))
-    size = size1, size2
     videostab = file[:-4] + 'stab.mp4'
     out = cv2.VideoWriter(videostab, fourcc, fps, newsize)
 
     while cap.isOpened():
-
         # read frames
         ret2, cur = cap.read()
         if not ret2:
             break
         cur = cv2.resize(cur, newsize, cv2.INTER_CUBIC)
-
         affine = cv2.estimateRigidTransform(prev, cur, True)
-
+        print(affine)
+        # Sometimes there is no Affine transform between frames, so we use the last
         if not np.all(affine):
             affine = last_affine
-
         last_affine = affine
-        old.append(affine)
 
+        # save original affine for comparing with stabilizied
+        old.append(affine)
+        # get x, y and angle
         d[0] = affine[0][2]
         d[1] = affine[1][2]
         d[2] = math.atan2(affine[1][0], affine[0][0])
+        # cumulative transform
         z += d
-
         # prediction update
-        P += Q  # P_(k) = P(k - 1) + Q
+        P += Q  # P(k) = P(k - 1) + Q
         # measurement update
-        K = P_ / (P_ + R)     # gain K(k) = P_(k) / (P_(k) + R)
-        X += K * (z - X)    # z - X_ is residual, X(k) = X_(k) + K(k) * (z(k) - X_(k))
-        P *= (np.ones(3) - K)      # P(k) = (1 - K(k)) * P_(k)    delta update
+        K = P / (P + R)     # gain K(k) = P(k) / (P(k) + R)
+        X += K * (z - X)    # z - X is residual, X(k) = X_(k) + K(k) * (z(k) - X(k))
+        P *= (np.ones(3) - K)      # P(k) = (1 - K(k)) * P(k)    delta update
         d += X - z
-
+        # create new Affine transform
         cosptr = math.cos(d[2])
         sinptr = math.sin(d[2])
         newA = np.array([[cosptr, -sinptr, d[0]],
                          [sinptr, cosptr, d[1]]])
 
+        # get stabilized frame
         cur2 = cv2.warpAffine(prev, newA, newsize)
+        # crop borders
         cur2 = cur2[vert_border: -vert_border][horizontal_border: -horizontal_border]
         cur2 = cv2.resize(cur2, newsize)
         new.append(newA)
-        #cv2.imshow('original', prev)
-        #cv2.imshow('stabilized', cur2)
+        # concatenate original and stabilized frames
+        result = np.concatenate((cur2, cur))
+        s1, s2 = result.shape[:2]
+        # and rotate them
+        rot = cv2.getRotationMatrix2D((s1//2, s2//2), 270, 1)
+        result = cv2.warpAffine(result, rot, (s2, s1))
+        cv2.imshow('show', result)
         out.write(cur2)
         prev = cur
-        #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #break
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
     out.release()
     cv2.destroyAllWindows()
+    # x
     compareplots(oldtrajectory=old, newtrajectory=new, name='X')
     # y
     compareplots(oldtrajectory=old, newtrajectory=new, name='Y')
@@ -129,27 +133,6 @@ def videostab(filename):
     return videostab
 
 
-def rotate_video(filename, angle):
-    cap = cv2.VideoCapture(filename)
-    fourcc = cv2.VideoWriter_fourcc(*'H264')
-    fps = cap.get(5)
-    size1 = np.int(cap.get(3))
-    size2 = np.int(cap.get(4))
-    size = size1, size2
-    videostab = filename[-4]+'rotated.mp4'
-    center = size1 // 2, size2 // 2
-    rot = cv2.getRotationMatrix2D(center, angle, 1)
-    out = cv2.VideoWriter(videostab, fourcc, fps, size)
-    while cap.isOpened:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = cv2.warpAffine(frame, rot, size)
-        out.write(frame)
-    out.release()
-    cap.release()
-
-
-'''if __name__ == '__main__':
-    name = videotab('VIDEO0008.mp4')'''
+if __name__ == '__main__':
+    name = videostab('VIDEO0009.mp4', 0.007, 0.1)
 
