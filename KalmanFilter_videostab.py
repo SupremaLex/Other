@@ -57,6 +57,7 @@ def videostab(filename, pstd=4e-3, cstd=0.1, newsize=(640, 320)):
 
     file = filename
     cap = cv2.VideoCapture(file)
+    nframes = np.int(cap.get(7))
     ret1, prev = cap.read()
     prev = cv2.resize(prev, newsize, cv2.INTER_CUBIC)
 
@@ -67,14 +68,11 @@ def videostab(filename, pstd=4e-3, cstd=0.1, newsize=(640, 320)):
     videostab = file[:-4] + 'stab.mp4'
     out = cv2.VideoWriter(videostab, fourcc, fps, newsize)
 
-    while cap.isOpened():
+    for i in range(nframes-1):
         # read frames
         ret2, cur = cap.read()
-        if not ret2:
-            break
         cur = cv2.resize(cur, newsize, cv2.INTER_CUBIC)
         affine = cv2.estimateRigidTransform(prev, cur, True)
-        print(affine)
         # Sometimes there is no Affine transform between frames, so we use the last
         if not np.all(affine):
             affine = last_affine
