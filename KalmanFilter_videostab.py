@@ -109,7 +109,7 @@ def videostab(filename, pstd=4e-3, cstd=0.1, newsize=(640, 320)):
         result = np.concatenate((cur2, cur))
         s1, s2 = result.shape[:2]
         # and rotate them
-        rot = cv2.getRotationMatrix2D((s1//2, s2//2), 270, 1)
+        rot = cv2.getRotationMatrix2D((s1//2, s2//2), -90, 1)
         result = cv2.warpAffine(result, rot, (s2, s1))
         cv2.imshow('show', result)
         out.write(cur2)
