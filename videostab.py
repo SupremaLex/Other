@@ -9,6 +9,41 @@ from kalmanfilter import KalmanFilter
 
 vert_border = 10
 horizontal_border = 10
+# params for ShiTomasi corner detection
+feature_params = dict(maxCorners=100,
+                      qualityLevel=0.3,
+                      minDistance=7,
+                      blockSize=7)
+
+# Parameters for lucas kanade optical flow
+lk_params = dict(winSize=(15, 15),
+                 maxLevel=2,
+                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
+# Create some random colors
+color = np.random.randint(0,255,(100,3))
+
+
+def curves(prevcorners, prev, cur):
+    prev = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+    cur = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+
+    #corners = cv2.goodFeaturesToTrack(prev, mask=None, **feature_params)
+    mask = np.zeros_like(cur)
+
+    nextcorners, status, err = cv2.calcOpticalFlowPyrLK(prev, cur, prevcorners, None, **lk_params)
+
+    good_new = nextcorners[status == 1]
+    good_old = prevcorners[status == 1]
+    tracks = []
+    for i, (new, old) in enumerate(zip(good_new, good_old)):
+        y = np.int32(new.ravel())
+        x = np.int32(old.ravel())
+        tracks.append((y, x))
+        mask = cv2.line(cur, (y[0],y[1]), (x[0], x[1]), (0, 0, 0), 2)
+
+    img = cv2.add(cur, mask)
+    return good_new, img, tracks
 
 
 def get_params_from_trajectory(trajectory):
@@ -41,7 +76,7 @@ def videostab(filename, newsize=(640, 320)):
     print('Video ' + filename + ' processed')
     with open('covariance.pickle', 'rb') as file:
         R = pickle.load(file)
-    Q = np.diag([3e-3, 3e-3, 3e-3, 3e-3, 3e-3, 3e-3])*0
+    Q = np.diag([1e-6, 1e-6, 4e-3, 1e-6, 1e-6, 5e-1])
     F = np.eye(6)
     X = np.zeros((6, 1))
     P = np.diag([1, 1, 1, 1, 1, 1])
@@ -52,8 +87,8 @@ def videostab(filename, newsize=(640, 320)):
     X = np.zeros(3)
     P = np.ones(3)
     H = np.eye(3)
-    Q = 4*np.ones(3)*1e-3
-    R = np.ones(3)*0.1**2
+    Q = np.array([4e-3, 5e-3, 1e-4])
+    R = np.array([4e-4, 4e-4, 1e-5])*100
     kf_3 = KalmanFilter(X, F, H, P, Q, R, 1)
 
     file = filename
@@ -68,11 +103,12 @@ def videostab(filename, newsize=(640, 320)):
     fps = cap.get(5)
     videostab = file[:-4] + 'stab.mp4'
     out = cv2.VideoWriter(videostab, fourcc, fps, newsize)
-
     for i in range(nframes-1):
         # read frames
         ret2, cur = cap.read()
         cur = cv2.resize(cur, newsize, cv2.INTER_CUBIC)
+
+        # Threshold for an optimal value, it may vary depending on the image.
         affine = cv2.estimateRigidTransform(prev, cur, True)
         # Sometimes there is no Affine transform between frames, so we use the last
         if not np.all(affine):
@@ -103,15 +139,28 @@ def videostab(filename, newsize=(640, 320)):
         # crop borders
         cur2 = cur2[vert_border: -vert_border][horizontal_border: -horizontal_border]
         cur2 = cv2.resize(cur2, newsize)
+
         cur3 = cur3[vert_border: -vert_border][horizontal_border: -horizontal_border]
         cur3 = cv2.resize(cur3, newsize)
+
+        cur2grey = cv2.cvtColor(cur2, cv2.COLOR_BGR2GRAY)
+        cur3grey = cv2.cvtColor(cur3, cv2.COLOR_BGR2GRAY)
+        img = 0
+
+
         new_6.append(newtrans_6)
         new_3.append(newtrans_3)
         # concatenate original and stabilized frames
+        if np.all(img): cur2 = img
         result = concat_images(cur, cur2, cur3)
         cv2.imshow('show', result)
         out.write(cur2)
         prev = cur
+        prev2 = cur2grey
+        prev3 = cur3grey
+        if i > 1:
+            good_old2 = good_new2[:]
+            good_old3 = good_new3[:]
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -120,7 +169,7 @@ def videostab(filename, newsize=(640, 320)):
     cv2.destroyAllWindows()
 
     trajectory(old, 'r')
-    trajectory(new_6, 'g')
+    #trajectory(new_6, 'g')
     trajectory(new_3, 'b')
     plt.show()
     return videostab
@@ -163,7 +212,31 @@ def rotate_video(videoname):
     cap.release()
     out.release()
 
+def show(videoname):
+    cap = cv2.VideoCapture(videoname)
+    size = 640, 480
+    nframes = np.int(cap.get(7))
+    ret, prev = cap.read()
+    prev = cv2.resize(prev, size)
+    prevgrey = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+    corners = cv2.goodFeaturesToTrack(prevgrey, 50, 0.01, 5)
+    new_tracks = []
+    for i in range(nframes-2):
+        ret, cur = cap.read()
+        cur = cv2.resize(cur, size)
+        #cur = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+        nextcorners, img, tracks = curves(corners, prev, cur)
+        pts = np.array([tracks])
+        new_tracks.append(pts)
+        #pts = tracks.reshape((-1, 1, 2))
+        print([e[0][:1] for e in new_tracks])
+        #if i % 10 == 0:
+        cur = cv2.polylines(cur, np.array([e[0][:1] for e in new_tracks]), False, (0, 0, 0), thickness=1, lineType=8)
+        cv2.imshow('show', cur)
+        if cv2.waitKey(30) & 0xFF == ord('q'):
+            break
 
 if __name__ == '__main__':
-    name = videostab('t1.mp4')
+    #name = videostab('t1.mp4', (480, 480))
+    show('t1.mp4')
 
